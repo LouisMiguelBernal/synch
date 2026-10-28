@@ -1,0 +1,442 @@
+{
+  "id": "ajBWBWausi7rXqAP",
+  "name": "Triage — Sweeper",
+  "nodes": [
+    {
+      "id": "704a5f52-156c-23a7-2e11-2faadea7af1e",
+      "name": "Sweeper",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        40
+      ],
+      "parameters": {
+        "content": "## Sweeper\nEvery 10 min, or on demand via `POST /webhook/triage-sweep` (same token; body may set `stuck_minutes`, `retry_minutes`, `alert_minutes` for tests). Replays failed and stuck tickets, resends missed Slack alerts (max 5 tries), and purges message content older than `TRIAGE_RETENTION_DAYS`.",
+        "width": 1300,
+        "height": 200,
+        "color": 7
+      }
+    },
+    {
+      "id": "8405e634-d060-b4c3-b8c7-fa4a8d3312c1",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "name": "Every 10 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "id": "cdfd1af8-e485-3750-e7a9-562e8dc60820",
+      "typeVersion": 2.1,
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "triage-sweep",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Sweep webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        0,
+        520
+      ],
+      "webhookId": "c2945122-4281-c250-1480-ea71ead3ec6d"
+    },
+    {
+      "id": "8378f686-351a-4e1e-2a34-b9410ffe1954",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const crypto = require('crypto');\nconst given = Buffer.from(String(($json.headers || {})['x-triage-token'] || ''));\nconst expected = Buffer.from(String($env.TRIAGE_WEBHOOK_TOKEN || ''));\nconst authorized = expected.length > 0 && given.length === expected.length && crypto.timingSafeEqual(given, expected);\nreturn { json: { authorized, body: $json.body || {} } };"
+      },
+      "name": "Check token",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        220,
+        520
+      ]
+    },
+    {
+      "id": "219946d7-7652-692e-1024-999d902dfdd3",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "3d99382a-4e6d-b68b-40cc-0f9e2c49bf7f",
+              "leftValue": "={{ $json.authorized }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Authorized?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        440,
+        520
+      ]
+    },
+    {
+      "id": "1d96a98f-d39e-52b0-6ad5-96da1ed6fd31",
+      "typeVersion": 1.1,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'unauthorized' }) }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "name": "Respond: 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        660,
+        680
+      ]
+    },
+    {
+      "id": "10b9a0ee-9928-d2f4-363f-5de2f913d848",
+      "typeVersion": 1.1,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, sweep: 'started' }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "name": "Respond: sweep started",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        660,
+        520
+      ]
+    },
+    {
+      "id": "c38bcd9b-379e-4149-8348-a5dd7530940f",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Schedule run: defaults. Webhook run: the request body may shorten the age limits (used by eval/run.mjs).\nconst b = $json.body || {};\nconst num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d);\nreturn { json: {\n  stuck_minutes: num(b.stuck_minutes, 15),\n  retry_minutes: num(b.retry_minutes, 5),\n  alert_minutes: num(b.alert_minutes, 5),\n  retention_days: num($env.TRIAGE_RETENTION_DAYS, 30),\n  slack: !!(($env.TRIAGE_AI_MODE || 'ollama') === 'mock' ? 'http://host.docker.internal:8787/slack' : ($env.TRIAGE_SLACK_WEBHOOK_URL || '')),\n} };"
+      },
+      "name": "Sweep settings",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "id": "78d16a27-e84e-b176-1f09-9726d4344fdb",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Stuck = crashed mid-run (no stage update for N min). Mark them failed, then replay every failed ticket with attempts left.\nWITH stuck AS (\n  UPDATE tickets SET status = 'failed', error = coalesce(error, 'stuck in ' || status::text), updated_at = now()\n  WHERE status IN ('received', 'classified') AND updated_at < now() - make_interval(mins => $1::int)\n  RETURNING id, raw, attempts\n),\nev AS (INSERT INTO ticket_events (ticket_id, stage) SELECT id, 'marked_stuck' FROM stuck)\nSELECT id, raw FROM tickets WHERE status = 'failed' AND attempts < 3 AND updated_at <= now() - make_interval(mins => $2::int)\nUNION\nSELECT id, raw FROM stuck WHERE attempts < 3;",
+        "options": {
+          "queryReplacement": "={{ [ $json.stuck_minutes, $json.retry_minutes ] }}"
+        }
+      },
+      "name": "Find tickets to replay",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        1100,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Triage Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "ae083b05-a413-8bab-62ca-222e632406dd",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/triage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-triage-token",
+              "value": "={{ $env.TRIAGE_WEBHOOK_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ...$json.raw, source: 'sweeper' }) }}",
+        "options": {
+          "timeout": 300000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 0
+            }
+          }
+        }
+      },
+      "name": "Replay to Core",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1320,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "e236c8e4-f02b-a557-ae33-2fedebdd02a4",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Counts every resend so a dead Slack webhook is not retried forever.\nUPDATE tickets SET alert_attempts = alert_attempts + 1\nWHERE id IN (\n  SELECT id FROM tickets\n  WHERE $1::boolean AND status = 'needs_review' AND notified_at IS NULL AND alert_text IS NOT NULL AND alert_attempts < 5\n    AND updated_at <= now() - make_interval(mins => $2::int) AND created_at > now() - interval '3 days'\n)\nRETURNING id, alert_text;",
+        "options": {
+          "queryReplacement": "={{ [ $json.slack, $json.alert_minutes ] }}"
+        }
+      },
+      "name": "Find unsent alerts",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        1100,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Triage Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "8bdbb9d9-5534-01a5-3481-d8ba7da7639f",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.TRIAGE_AI_MODE || 'ollama') === 'mock' ? 'http://host.docker.internal:8787/slack' : ($env.TRIAGE_SLACK_WEBHOOK_URL || '')) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.alert_text }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "name": "Slack: resend alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1320,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "37c256f3-daf2-7123-f31c-11a3df04f003",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH upd AS (UPDATE tickets SET notified_at = now() WHERE id = $1::bigint RETURNING id)\nINSERT INTO ticket_events (ticket_id, stage, detail) SELECT id, 'notified', '{\"by\":\"sweeper\"}' FROM upd RETURNING ticket_id;",
+        "options": {
+          "queryReplacement": "={{ [ $('Find unsent alerts').item.json.id ] }}"
+        }
+      },
+      "name": "Mark notified",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        1540,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Triage Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "37715bf2-77c3-de1f-4b5a-dcc8aa165184",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Retention: after N days keep only the triage outcome (category, confidence, reasons, timestamps); drop message content.\nWITH purged AS (\n  UPDATE tickets SET sender = NULL, subject = NULL, body_clean = NULL, summary = NULL, draft = NULL, alert_text = NULL,\n    raw = '{\"purged\": true}'::jsonb, purged_at = now()\n  WHERE purged_at IS NULL AND created_at < now() - make_interval(days => $1::int) AND status IN ('ready', 'needs_review', 'skipped', 'failed')\n  RETURNING id\n)\nINSERT INTO ticket_events (ticket_id, stage, detail) SELECT NULL, 'purged', jsonb_build_object('count', count(*)) FROM purged HAVING count(*) > 0\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.retention_days ] }}"
+        }
+      },
+      "name": "Purge old content",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        1100,
+        640
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Triage Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Sweep webhook": {
+      "main": [
+        [
+          {
+            "node": "Check token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check token": {
+      "main": [
+        [
+          {
+            "node": "Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Respond: sweep started",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 10 minutes": {
+      "main": [
+        [
+          {
+            "node": "Sweep settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: sweep started": {
+      "main": [
+        [
+          {
+            "node": "Sweep settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sweep settings": {
+      "main": [
+        [
+          {
+            "node": "Find tickets to replay",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Find unsent alerts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Purge old content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find tickets to replay": {
+      "main": [
+        [
+          {
+            "node": "Replay to Core",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find unsent alerts": {
+      "main": [
+        [
+          {
+            "node": "Slack: resend alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: resend alert": {
+      "main": [
+        [
+          {
+            "node": "Mark notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "qDCrXj_t_3UuUm1_"
+  },
+  "pinData": {}
+}

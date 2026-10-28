@@ -1,0 +1,352 @@
+{
+  "id": "h4Y71MdRs7pfNi30",
+  "name": "Triage — Gmail intake",
+  "nodes": [
+    {
+      "id": "742be793-1794-9756-da4d-57fa3b41a1fb",
+      "name": "Gmail intake",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        60
+      ],
+      "parameters": {
+        "content": "## Gmail intake\nGmail search query from `TRIAGE_GMAIL_QUERY` (default: all incoming inbox mail).Live: Gmail Trigger polls every minute. **Reconcile** every 15 min lists the last 3 days of inbox mail and sends only messages that have no ticket yet, so mail is not lost while Core, Postgres or the AI is down.",
+        "width": 1160,
+        "height": 200,
+        "color": 7
+      }
+    },
+    {
+      "id": "f7dd2013-a7f4-b556-1542-d7c684bf7fc1",
+      "typeVersion": 1.2,
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "in:inbox -from:me",
+          "readStatus": "both"
+        },
+        "options": {}
+      },
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "position": [
+        0,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "triageGmail00001",
+          "name": "Triage Gmail"
+        }
+      }
+    },
+    {
+      "id": "34c87e9d-6bea-b3df-99ee-76e6c6ad167d",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        0,
+        520
+      ]
+    },
+    {
+      "id": "ede20ac9-b37a-d279-1df5-0a1182b07e56",
+      "typeVersion": 2.1,
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 100,
+        "simple": false,
+        "filters": {
+          "q": "in:inbox -from:me newer_than:3d",
+          "readStatus": "both"
+        },
+        "options": {
+          "downloadAttachments": false
+        }
+      },
+      "name": "List recent inbox mail",
+      "type": "n8n-nodes-base.gmail",
+      "position": [
+        220,
+        520
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "triageGmail00001",
+          "name": "Triage Gmail"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "ecae5d2f-4f0a-0693-3e32-07325c91143c",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Gmail (raw format) → the Core webhook payload. Header values arrive as full lines (\"Message-ID: <...>\").\nconst m = $json;\nconst headers = {};\nfor (const [k, v] of Object.entries(m.headers || {})) {\n  const line = String(v);\n  headers[k.toLowerCase()] = line.toLowerCase().startsWith(k.toLowerCase() + ':') ? line.slice(k.length + 1).trim() : line;\n}\nconst from = m.from?.value?.[0] || {};\nreturn { json: {\n  message_id: m.messageId || headers['message-id'] || null,\n  thread_id: m.threadId || null,\n  from: from.address || m.from?.text || '',\n  from_name: from.name || null,\n  subject: m.subject || '',\n  text: m.text || null,\n  html: m.html || null,\n  received_at: m.date || null,\n  has_attachments: Object.keys($input.item.binary || {}).length > 0 || (m.attachments || []).length > 0,\n  headers: Object.fromEntries(['message-id', 'in-reply-to', 'references', 'auto-submitted', 'precedence', 'x-autoreply', 'list-id'].filter((k) => headers[k]).map((k) => [k, headers[k]])),\n  source: 'gmail',\n  gmail_id: m.id,\n} };"
+      },
+      "name": "Map to triage payload",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "id": "fbdfeb4c-889a-2c8c-efa5-7ffbd4962a9a",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Gmail (raw format) → the Core webhook payload. Header values arrive as full lines (\"Message-ID: <...>\").\nconst m = $json;\nconst headers = {};\nfor (const [k, v] of Object.entries(m.headers || {})) {\n  const line = String(v);\n  headers[k.toLowerCase()] = line.toLowerCase().startsWith(k.toLowerCase() + ':') ? line.slice(k.length + 1).trim() : line;\n}\nconst from = m.from?.value?.[0] || {};\nreturn { json: {\n  message_id: m.messageId || headers['message-id'] || null,\n  thread_id: m.threadId || null,\n  from: from.address || m.from?.text || '',\n  from_name: from.name || null,\n  subject: m.subject || '',\n  text: m.text || null,\n  html: m.html || null,\n  received_at: m.date || null,\n  has_attachments: Object.keys($input.item.binary || {}).length > 0 || (m.attachments || []).length > 0,\n  headers: Object.fromEntries(['message-id', 'in-reply-to', 'references', 'auto-submitted', 'precedence', 'x-autoreply', 'list-id'].filter((k) => headers[k]).map((k) => [k, headers[k]])),\n  source: 'gmail_reconcile',\n  gmail_id: m.id,\n} };"
+      },
+      "name": "Map (reconcile)",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        440,
+        520
+      ]
+    },
+    {
+      "id": "3fb89bf0-4794-e691-e73b-b1a7e76d0726",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT EXISTS (SELECT 1 FROM tickets WHERE message_id = $1) AS known;",
+        "options": {
+          "queryReplacement": "={{ [ $json.message_id || '' ] }}"
+        }
+      },
+      "name": "Has ticket?",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        660,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Triage Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "49c2459a-4bad-db43-0eee-145a7b447cdc",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "6fa9f439-d63c-7c01-a621-e00ded5be0fc",
+              "leftValue": "={{ $json.known === false && !!$('Map (reconcile)').item.json.message_id }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Missing?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        880,
+        520
+      ]
+    },
+    {
+      "id": "6eb80788-c654-f53c-47ac-3b096cb9b122",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/triage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-triage-token",
+              "value": "={{ $env.TRIAGE_WEBHOOK_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 300000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 0
+            }
+          }
+        }
+      },
+      "name": "Send to Core",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "id": "a3169c1b-808f-3e8e-e335-1bfcee855fec",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/triage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-triage-token",
+              "value": "={{ $env.TRIAGE_WEBHOOK_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Map (reconcile)').item.json) }}",
+        "options": {
+          "timeout": 300000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 0
+            }
+          }
+        }
+      },
+      "name": "Send missing to Core",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1100,
+        500
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "List recent inbox mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Map to triage payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List recent inbox mail": {
+      "main": [
+        [
+          {
+            "node": "Map (reconcile)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map (reconcile)": {
+      "main": [
+        [
+          {
+            "node": "Has ticket?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has ticket?": {
+      "main": [
+        [
+          {
+            "node": "Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map to triage payload": {
+      "main": [
+        [
+          {
+            "node": "Send to Core",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Missing?": {
+      "main": [
+        [
+          {
+            "node": "Send missing to Core",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "qDCrXj_t_3UuUm1_"
+  },
+  "pinData": {}
+}

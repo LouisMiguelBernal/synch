@@ -1,0 +1,141 @@
+{
+  "id": "qDCrXj_t_3UuUm1_",
+  "name": "Triage — Errors",
+  "nodes": [
+    {
+      "id": "f8c9b057-18d2-7a20-0899-1306ec7cb5e4",
+      "typeVersion": 1,
+      "parameters": {},
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "id": "e21845b4-6700-f588-2b9f-faeba77d6ca8",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ticket_events (ticket_id, stage, detail) VALUES (NULL, 'workflow_error', $1::jsonb) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ { workflow: $json.workflow?.name, node: $json.execution?.lastNodeExecuted, message: String($json.execution?.error?.message || '').slice(0, 500), execution_id: $json.execution?.id, url: $json.execution?.url } ] }}"
+        }
+      },
+      "name": "Log workflow error",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "triagePostgres01",
+          "name": "Triage Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "fc15be44-8830-e867-b881-027775aab47c",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "16b6aafd-aefc-f802-ea2d-50e97ef3daea",
+              "leftValue": "={{ !!(($env.TRIAGE_AI_MODE || 'ollama') === 'mock' ? 'http://host.docker.internal:8787/slack' : ($env.TRIAGE_SLACK_WEBHOOK_URL || '')) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Slack configured?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "id": "c1d98f05-9b84-184b-a1ad-15b508eb2392",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.TRIAGE_AI_MODE || 'ollama') === 'mock' ? 'http://host.docker.internal:8787/slack' : ($env.TRIAGE_SLACK_WEBHOOK_URL || '')) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: ':warning: *' + $('Error Trigger').item.json.workflow?.name + '* failed at *' + $('Error Trigger').item.json.execution?.lastNodeExecuted + '*: ' + String($('Error Trigger').item.json.execution?.error?.message || '').slice(0, 300) + ($('Error Trigger').item.json.execution?.url ? '\\n<' + $('Error Trigger').item.json.execution.url + '|Open execution>' : '') }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "name": "Slack: workflow error",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        660,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Log workflow error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log workflow error": {
+      "main": [
+        [
+          {
+            "node": "Slack configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack configured?": {
+      "main": [
+        [
+          {
+            "node": "Slack: workflow error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

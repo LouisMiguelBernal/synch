@@ -1,0 +1,6 @@
+.env
+.env.*
+!env.template
+submission/
+node_modules/
+eval/results/
