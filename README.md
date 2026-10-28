@@ -3,6 +3,12 @@
 Every email that reaches the shared support inbox becomes a ticket with a **category**, a **confidence score** and a **draft reply**. A person is alerted (Slack, or the `review_queue` view) when they need to look first. Drafts are never sent automatically.
 
 
+## Demo (30 s)
+
+[![Synch: 30-second demo](media/synch-poster.png)](media/synch-promo.mp4)
+
+Click the image to play [`media/synch-promo.mp4`](media/synch-promo.mp4) (1920×1080, 9 MB).
+
 ## How it works
 
 ```
