@@ -1,4 +1,4 @@
-# Customer-request triage (n8n + AI + Postgres)
+# Switchboard — customer-request triage (n8n + AI + Postgres)
 
 Every email that reaches the shared support inbox becomes a ticket with a **category**, a **confidence score** and a **draft reply**. A person is alerted (Slack, or the `review_queue` view) when they need to look first. Drafts are never sent automatically.
 
